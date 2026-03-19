@@ -8,37 +8,6 @@ import warnings
 
 warnings.filterwarnings('ignore')
 
-# ========== 新增：年龄/保额风险映射（核心修改） ==========
-# 年龄风险映射（阈值区间: 风险等级）
-age_risk_map = {
-    (0, 17): "较低风险",
-    (18, 35): "低风险",
-    (36, 50): "中风险",
-    (51, 65): "高风险",
-    (66, 120): "极高风险"
-}
-
-# 保额风险映射（阈值区间: 风险等级）
-sum_insured_risk_map = {
-    (0.00, 100000.00): "低风险",
-    (100000.01, 500000.00): "较低风险",
-    (500000.01, 1000000.00): "中风险",
-    (1000000.01, 2000000.00): "高风险",
-    (2000000.01, 999999999.99): "极高风险"
-}
-
-# 新增：通用风险等级匹配函数
-def get_risk_level(value, risk_map):
-    """
-    根据数值和风险映射表，获取对应的风险等级
-    :param value: 待判断的数值（年龄/保额）
-    :param risk_map: 风险映射表（age_risk_map/sum_insured_risk_map）
-    :return: 风险等级字符串，若未匹配到返回"未知风险"
-    """
-    for (min_val, max_val), level in risk_map.items():
-        if min_val <= value <= max_val:
-            return level
-    return "未知风险"
 
 # ========== 加载配置文件 ==========
 def load_config(config_path="config.yaml"):
@@ -64,11 +33,13 @@ def load_config(config_path="config.yaml"):
     except Exception as e:
         raise RuntimeError(f"加载配置失败：{str(e)}")
 
+
 # 全局配置（启动时加载）
 CONFIG = load_config()
 
 # ========== 1. 初始化 FastAPI 应用 ==========
 app = FastAPI(title="风控风险计算API", version="1.0")
+
 
 # ========== 2. 加载模型和标准化器 ==========
 def load_model_and_scaler():
@@ -92,8 +63,10 @@ def load_model_and_scaler():
     except Exception as e:
         raise RuntimeError(f"加载模型失败：{str(e)}")
 
+
 # 初始化模型（启动API时加载）
 risk_model, risk_scaler = load_model_and_scaler()
+
 
 # ========== 3. 定义请求/响应模型 ==========
 class RiskDecisionPythonRequest(BaseModel):
@@ -111,12 +84,14 @@ class RiskDecisionPythonRequest(BaseModel):
             raise ValueError('投保保额必须大于0')
         return v
 
+
 # 响应模型：仅返回概率（3位小数）+ 分析文本
 class RiskDecisionPythonResponse(BaseModel):
     python_risk_probability: float = Field(..., ge=0.0, le=1.0, description="Python侧风险概率（0-1，保留3位小数）")
     python_risk_analysis: str = Field(..., description="Python侧风险分析（供Java端整合原因）")
 
-# ========== 4. 辅助函数：生成风险分析文本（核心修改） ==========
+
+# ========== 4. 辅助函数：生成风险分析文本 ==========
 def generate_risk_analysis(request: RiskDecisionPythonRequest, risk_prob: float) -> str:
     """根据参数和风险概率，生成结构化的风险分析"""
     analysis_parts = []
@@ -139,17 +114,16 @@ def generate_risk_analysis(request: RiskDecisionPythonRequest, risk_prob: float)
     else:
         analysis_parts.append("无既往病史")
 
-    # 4. 年龄风险（核心修改：替换原简单判断为风险等级映射）
-    age_risk_level = get_risk_level(request.age, age_risk_map)
-    analysis_parts.append(f"投保年龄{request.age}岁（{age_risk_level}）")
-
-    # 5. 保额风险（核心修改：替换原简单判断为风险等级映射）
-    amount_risk_level = get_risk_level(request.insure_amount, sum_insured_risk_map)
-    analysis_parts.append(f"投保保额{request.insure_amount:.2f}元（{amount_risk_level}）")
+    # 4. 保额/年龄相关
+    if request.insure_amount >= 1000000:
+        analysis_parts.append(f"投保保额{request.insure_amount:.2f}元（高保额）")
+    if request.age >= 50:
+        analysis_parts.append(f"投保年龄{request.age}岁（高龄）")
 
     # 风险概率展示（3位小数）
     analysis = "; ".join(analysis_parts) + f"；计算得出风险概率{risk_prob:.3f}"
     return analysis
+
 
 # ========== 5. 核心API接口 ==========
 @app.post("/risk/calculate", response_model=RiskDecisionPythonResponse)
@@ -175,7 +149,8 @@ async def calculate_risk(request: RiskDecisionPythonRequest):
         amount_disease_interact = request.insure_amount * (1 if request.has_history_disease else 0)
 
         # 合并基础特征+交互特征
-        full_features = np.concatenate([base_features, [age_occupation_interact, amount_disease_interact]]).reshape(1, -1)
+        full_features = np.concatenate([base_features, [age_occupation_interact, amount_disease_interact]]).reshape(1,
+                                                                                                                    -1)
 
         # 3. 特征标准化（仅transform，避免数据泄露）
         features_scaled = risk_scaler.transform(full_features)
@@ -196,6 +171,7 @@ async def calculate_risk(request: RiskDecisionPythonRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Python侧风险计算失败：{str(e)}")
+
 
 # ========== 6. 启动API服务 ==========
 if __name__ == "__main__":
