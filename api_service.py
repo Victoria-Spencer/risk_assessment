@@ -3,39 +3,62 @@ from pydantic import BaseModel, Field, validator
 import numpy as np
 import joblib
 import os
+import yaml
 import warnings
 
 warnings.filterwarnings('ignore')
 
-# ========== 配置项（和train_model.py保持一致） ==========
-MODEL_PATH = "models/risk_model.pkl"  # 模型路径
-SCALER_PATH = "models/risk_scaler.pkl"  # 标准化器路径
-FEATURE_COLS = [  # 特征列顺序（必须和训练时一致）
-    "total_risk_score",
-    "occupation_risk_level",
-    "age",
-    "insure_amount",
-    "has_history_disease"
-]
+
+# ========== 加载配置文件（核心修改：替换硬编码） ==========
+def load_config(config_path="config.yaml"):
+    """加载配置文件，返回配置字典（含异常处理）"""
+    try:
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(f"配置文件不存在：{config_path}")
+
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+
+        # 校验API必需的配置字段
+        required_api_keys = ["model.model_path", "model.scaler_path", "model.feature_cols", "api.host", "api.port"]
+        for key in required_api_keys:
+            keys = key.split(".")
+            val = config
+            for k in keys:
+                val = val.get(k)
+                if val is None:
+                    raise KeyError(f"配置文件缺失核心字段：{key}")
+
+        return config
+    except Exception as e:
+        raise RuntimeError(f"加载配置失败：{str(e)}")
+
+
+# 全局配置（启动时加载）
+CONFIG = load_config()
 
 # ========== 1. 初始化 FastAPI 应用 ==========
 app = FastAPI(title="风控风险计算API", version="1.0")
 
 
-# ========== 2. 加载真实模型和标准化器（删除Mock逻辑） ==========
+# ========== 2. 加载真实模型和标准化器（使用配置文件路径） ==========
 def load_model_and_scaler():
     """加载训练好的真实模型和标准化器"""
     try:
+        # 从配置读取路径
+        model_path = CONFIG["model"]["model_path"]
+        scaler_path = CONFIG["model"]["scaler_path"]
+
         # 检查文件是否存在
-        if not os.path.exists(MODEL_PATH):
-            raise FileNotFoundError(f"模型文件不存在：{MODEL_PATH}（请先运行train_model.py训练模型）")
-        if not os.path.exists(SCALER_PATH):
-            raise FileNotFoundError(f"标准化器文件不存在：{SCALER_PATH}（请先运行train_model.py训练模型）")
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"模型文件不存在：{model_path}（请先运行train_model.py训练模型）")
+        if not os.path.exists(scaler_path):
+            raise FileNotFoundError(f"标准化器文件不存在：{scaler_path}（请先运行train_model.py训练模型）")
 
         # 加载真实模型和标准化器
-        model = joblib.load(MODEL_PATH)
-        scaler = joblib.load(SCALER_PATH)
-        print("真实模型和标准化器加载成功！")
+        model = joblib.load(model_path)
+        scaler = joblib.load(scaler_path)
+        print("✅ 真实模型和标准化器加载成功！")
         return model, scaler
     except Exception as e:
         raise RuntimeError(f"加载模型失败：{str(e)}")
@@ -92,9 +115,9 @@ def generate_risk_analysis(request: RiskDecisionPythonRequest, risk_prob: float)
         analysis_parts.append("无既往病史")
 
     # 4. 保额/年龄相关
-    if request.insure_amount >= 500000:
+    if request.insure_amount >= 1000000:
         analysis_parts.append(f"投保保额{request.insure_amount:.2f}元（高保额）")
-    if request.age >= 60:
+    if request.age >= 50:
         analysis_parts.append(f"投保年龄{request.age}岁（高龄）")
 
     # 风险概率展示（3位小数）
@@ -111,7 +134,8 @@ async def calculate_risk(request: RiskDecisionPythonRequest):
     输出：Python侧风险概率（3位小数） + 风险分析
     """
     try:
-        # 1. 构造特征数组（严格匹配训练时的特征顺序）
+        # 1. 构造特征数组（从配置读取特征列顺序，避免硬编码）
+        feature_cols = CONFIG["model"]["feature_cols"]
         features = np.array([
             request.total_risk_score,
             request.occupation_risk_level,
@@ -142,9 +166,14 @@ async def calculate_risk(request: RiskDecisionPythonRequest):
         raise HTTPException(status_code=500, detail=f"Python侧风险计算失败：{str(e)}")
 
 
-# ========== 6. 启动API服务 ==========
+# ========== 6. 启动API服务（使用配置文件的IP/端口） ==========
 if __name__ == "__main__":
     import uvicorn
 
-    # 监听指定IP和端口（可根据需要修改）
-    uvicorn.run(app, host="10.22.209.68", port=8000)
+    # 从配置读取监听IP和端口
+    api_host = CONFIG["api"]["host"]
+    api_port = CONFIG["api"]["port"]
+
+    # 启动服务
+    print(f"🚀 API服务启动中，监听地址：{api_host}:{api_port}")
+    uvicorn.run(app, host=api_host, port=api_port)
