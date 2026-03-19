@@ -64,9 +64,10 @@ def safe_save_file(file_path, obj, backup_suffix=".bak"):
     raise RuntimeError(f"❌ 保存文件失败：{file_path}（请关闭API服务后重试）")
 
 
-# ========== 生成模拟数据 ==========
+# ========== 生成模拟数据（仅优化分布，完全保留原有非线性计算） ==========
 def generate_simulate_data(n_samples=10000):
     np.random.seed(RANDOM_SEED)
+    # 1. 保留原有特征生成逻辑，仅优化保额分布以贴合你的风险等级区间（不破坏非线性）
     data = {
         "occupation_risk_level": np.random.choice(
             [0, 1, 2, 3, 4],
@@ -80,11 +81,14 @@ def generate_simulate_data(n_samples=10000):
             np.random.randint(51, 66, int(n_samples * 0.15)),
             np.random.randint(66, 121, int(n_samples * 0.15))
         ]),
-        "insure_amount": np.random.choice(
-            [np.random.uniform(1000, 500000), np.random.uniform(500000, 1000000)],
-            size=n_samples,
-            p=[0.8, 0.2]
-        ),
+        # 优化：保额分布贴合你的风险等级区间（仅调整分布，不改变数值类型）
+        "insure_amount": np.concatenate([
+            np.random.uniform(0, 100000, int(n_samples * 0.2)),  # 低风险区间
+            np.random.uniform(100000.01, 500000, int(n_samples * 0.3)),  # 较低风险
+            np.random.uniform(500000.01, 1000000, int(n_samples * 0.2)),  # 中风险
+            np.random.uniform(1000000.01, 2000000, int(n_samples * 0.15)),  # 高风险
+            np.random.uniform(2000000.01, 5000000, int(n_samples * 0.15))  # 极高风险
+        ]),
         "has_history_disease": np.random.choice(
             [True, False],
             size=n_samples,
@@ -92,12 +96,16 @@ def generate_simulate_data(n_samples=10000):
         )
     }
     df = pd.DataFrame(data)
+
+    # 2. 完全保留你原有total_risk_score计算逻辑（无修改）
     df['total_risk_score'] = (
             df['occupation_risk_level'] * 20 +
             np.clip(df['age'] // 10, 0, 10) +
             df['has_history_disease'].astype(int) * 8
     )
     df['total_risk_score'] = np.clip(df['total_risk_score'], 0, 100)
+
+    # 3. 完全保留你原有risk_probability的非线性计算逻辑（核心！无任何修改）
     df['risk_probability'] = (
             df['total_risk_score'] / 100 * 0.4 +
             df['occupation_risk_level'] / 4 * 0.25 +
@@ -105,11 +113,13 @@ def generate_simulate_data(n_samples=10000):
             np.clip((df['age'] / 120) * (df['insure_amount'] / 1000000) * 0.15, 0, 0.15)
     )
     df['risk_probability'] = np.clip(df['risk_probability'], 0.0, 1.0)
+
+    # 4. 打乱数据顺序（原有逻辑）
     df = df.sample(frac=1, random_state=RANDOM_SEED).reset_index(drop=True)
     return df
 
 
-# ========== 训练模型 ==========
+# ========== 训练模型（完全保留原有逻辑，无修改） ==========
 def train_and_save_model():
     # 加文件锁，避免多进程重复训练
     lock_file = os.path.join(MODEL_DIR, "train.lock")
@@ -119,10 +129,10 @@ def train_and_save_model():
         # 1. 生成数据
         df = generate_simulate_data(n_samples=N_SAMPLES)
 
-        # 2. 特征处理
+        # 2. 特征处理（保留原有非线性交互特征）
         X = df[FEATURE_COLS].copy()
-        X['age_occupation_interact'] = X['age'] * X['occupation_risk_level']
-        X['amount_disease_interact'] = X['insure_amount'] * X['has_history_disease'].astype(int)
+        X['age_occupation_interact'] = X['age'] * X['occupation_risk_level']  # 非线性交互项
+        X['amount_disease_interact'] = X['insure_amount'] * X['has_history_disease'].astype(int)  # 非线性交互项
         X['has_history_disease'] = X['has_history_disease'].astype(int)
         y = df['risk_probability']
 
@@ -170,3 +180,20 @@ def train_and_save_model():
 
 if __name__ == "__main__":
     train_and_save_model()
+
+# 你的年龄/保额风险等级映射（仅用于API侧展示，不影响训练逻辑）
+age_risk_map = {
+    (0, 17): "较低风险",
+    (18, 35): "低风险",
+    (36, 50): "中风险",
+    (51, 65): "高风险",
+    (66, 120): "极高风险"
+}
+
+sum_insured_risk_map = {
+    (0.00, 100000.00): "低风险",
+    (100000.01, 500000.00): "较低风险",
+    (500000.01, 1000000.00): "中风险",
+    (1000000.01, 2000000.00): "高风险",
+    (2000000.01, 999999999.99): "极高风险"
+}

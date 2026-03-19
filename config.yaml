@@ -13,5 +13,5 @@ train:
   n_samples: 10000                       # 模拟训练数据样本量（训练用）
   test_size: 0.2                         # 测试集占比（训练用）
 api:
-  host: "10.22.209.68"                   # API监听IP
+  host: "127.0.0.1"                      # API监听IP
   port: 8000                             # API监听端口
