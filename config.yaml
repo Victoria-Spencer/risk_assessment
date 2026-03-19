@@ -2,7 +2,7 @@
 model:
   model_path: "models/risk_model.pkl"    # 模型保存/加载路径
   scaler_path: "models/risk_scaler.pkl"  # 标准化器保存/加载路径
-  feature_cols:                          # 特征列（训练/API必须严格一致）
+  feature_cols:                          # 基础特征列（训练/API必须严格一致）
     - "total_risk_score"
     - "occupation_risk_level"
     - "age"

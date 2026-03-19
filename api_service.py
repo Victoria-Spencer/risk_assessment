@@ -9,7 +9,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
-# ========== 加载配置文件（核心修改：替换硬编码） ==========
+# ========== 加载配置文件 ==========
 def load_config(config_path="config.yaml"):
     """加载配置文件，返回配置字典（含异常处理）"""
     try:
@@ -41,9 +41,9 @@ CONFIG = load_config()
 app = FastAPI(title="风控风险计算API", version="1.0")
 
 
-# ========== 2. 加载真实模型和标准化器（使用配置文件路径） ==========
+# ========== 2. 加载模型和标准化器 ==========
 def load_model_and_scaler():
-    """加载训练好的真实模型和标准化器"""
+    """加载训练好的模型和标准化器"""
     try:
         # 从配置读取路径
         model_path = CONFIG["model"]["model_path"]
@@ -55,10 +55,10 @@ def load_model_and_scaler():
         if not os.path.exists(scaler_path):
             raise FileNotFoundError(f"标准化器文件不存在：{scaler_path}（请先运行train_model.py训练模型）")
 
-        # 加载真实模型和标准化器
+        # 加载模型和标准化器
         model = joblib.load(model_path)
         scaler = joblib.load(scaler_path)
-        print("✅ 真实模型和标准化器加载成功！")
+        print("✅ 模型和标准化器加载成功！")
         return model, scaler
     except Exception as e:
         raise RuntimeError(f"加载模型失败：{str(e)}")
@@ -68,7 +68,7 @@ def load_model_and_scaler():
 risk_model, risk_scaler = load_model_and_scaler()
 
 
-# ========== 3. 定义请求/响应模型（匹配 Java 端 DTO） ==========
+# ========== 3. 定义请求/响应模型 ==========
 class RiskDecisionPythonRequest(BaseModel):
     trace_id: str = Field(..., description="轨迹ID（唯一标识）")
     total_risk_score: int = Field(..., ge=0, le=100, description="风险因子总分（0-100）")
@@ -125,7 +125,7 @@ def generate_risk_analysis(request: RiskDecisionPythonRequest, risk_prob: float)
     return analysis
 
 
-# ========== 5. 核心API接口（动态预测） ==========
+# ========== 5. 核心API接口 ==========
 @app.post("/risk/calculate", response_model=RiskDecisionPythonResponse)
 async def calculate_risk(request: RiskDecisionPythonRequest):
     """
@@ -134,29 +134,36 @@ async def calculate_risk(request: RiskDecisionPythonRequest):
     输出：Python侧风险概率（3位小数） + 风险分析
     """
     try:
-        # 1. 构造特征数组（从配置读取特征列顺序，避免硬编码）
+        # 1. 构造基础特征数组（匹配配置的特征列顺序）
         feature_cols = CONFIG["model"]["feature_cols"]
-        features = np.array([
+        base_features = np.array([
             request.total_risk_score,
             request.occupation_risk_level,
             request.age,
             request.insure_amount,
             1 if request.has_history_disease else 0
-        ], dtype=np.float64).reshape(1, -1)  # 转二维数组（sklearn要求）
+        ], dtype=np.float64)
 
-        # 2. 特征标准化（使用训练好的scaler，仅transform）
-        features_scaled = risk_scaler.transform(features)
+        # 2. 补充训练时的交互特征（关键：和训练侧保持一致）
+        age_occupation_interact = request.age * request.occupation_risk_level
+        amount_disease_interact = request.insure_amount * (1 if request.has_history_disease else 0)
 
-        # 3. 模型预测风险概率（关键：用predict_proba取正例概率，而非固定值）
-        # predict_proba返回 [负例概率, 正例概率]，取[1]即风险概率
-        risk_prob_raw = risk_model.predict_proba(features_scaled)[0][1]
-        print(f"📌 模型原始预测概率：{risk_prob_raw}")  # 打印真实预测值（不再固定）
-        risk_prob = round(risk_prob_raw, 3)  # 保留3位小数
+        # 合并基础特征+交互特征
+        full_features = np.concatenate([base_features, [age_occupation_interact, amount_disease_interact]]).reshape(1,
+                                                                                                                    -1)
 
-        # 4. 生成风险分析
+        # 3. 特征标准化（仅transform，避免数据泄露）
+        features_scaled = risk_scaler.transform(full_features)
+
+        # 4. 模型预测风险概率（回归模型用predict，而非predict_proba）
+        risk_prob_raw = risk_model.predict(features_scaled)[0]  # 取第一个（唯一）预测值
+        risk_prob = round(float(risk_prob_raw), 3)  # 转float+保留3位小数
+        print(f"📌 模型预测风险概率：{risk_prob}")
+
+        # 5. 生成风险分析
         risk_analysis = generate_risk_analysis(request, risk_prob)
 
-        # 5. 返回结果
+        # 6. 返回结果
         return RiskDecisionPythonResponse(
             python_risk_probability=risk_prob,
             python_risk_analysis=risk_analysis
@@ -166,7 +173,7 @@ async def calculate_risk(request: RiskDecisionPythonRequest):
         raise HTTPException(status_code=500, detail=f"Python侧风险计算失败：{str(e)}")
 
 
-# ========== 6. 启动API服务（使用配置文件的IP/端口） ==========
+# ========== 6. 启动API服务 ==========
 if __name__ == "__main__":
     import uvicorn
 
