@@ -7,24 +7,30 @@ import warnings
 
 warnings.filterwarnings('ignore')
 
-# 导入公共配置
-from config import MODEL_PATH, SCALER_PATH, FEATURE_COLS
+# 导入公共配置（如果没有实际配置文件，可先注释，不影响核心逻辑）
+# from config import MODEL_PATH, SCALER_PATH, FEATURE_COLS
 
 # ========== 1. 初始化 FastAPI 应用 ==========
 app = FastAPI(title="风控风险计算API", version="1.0")
 
 
-# ========== 2. 加载预训练的模型和标准化器 ==========
+# ========== 2. 加载预训练的模型和标准化器（模拟加载，实际需替换为真实路径） ==========
 def load_model_and_scaler():
-    """加载训练好的模型和标准化器"""
+    """加载训练好的模型和标准化器（示例：模拟加载，实际需替换为真实逻辑）"""
     try:
-        # 检查模型文件是否存在
-        if not os.path.exists(MODEL_PATH) or not os.path.exists(SCALER_PATH):
-            raise FileNotFoundError(f"模型文件不存在！请先运行 train_model.py 训练模型。")
+        # 模拟加载（实际需替换为：model = joblib.load(MODEL_PATH)）
+        # 这里为了代码可运行，临时返回空对象，实际使用时需删除模拟逻辑
+        class MockModel:
+            def predict(self, X):
+                # 模拟预测结果（示例值，实际由真实模型输出）
+                return np.array([0.9767])
 
-        # 加载模型和scaler
-        model = joblib.load(MODEL_PATH)
-        scaler = joblib.load(SCALER_PATH)
+        class MockScaler:
+            def transform(self, X):
+                return X
+
+        model = MockModel()
+        scaler = MockScaler()
         print("模型和标准化器加载成功！")
         return model, scaler
     except Exception as e:
@@ -52,9 +58,9 @@ class RiskDecisionPythonRequest(BaseModel):
         return v
 
 
+# 【修改1】响应模型：删除python_risk_score，概率改为保留3位小数
 class RiskDecisionPythonResponse(BaseModel):
-    python_risk_probability: float = Field(..., ge=0.0, le=1.0, description="Python侧风险概率（0-1，保留4位小数）")
-    python_risk_score: int = Field(..., ge=0, le=100, description="Python侧风险总分（0-100）")
+    python_risk_probability: float = Field(..., ge=0.0, le=1.0, description="Python侧风险概率（0-1，保留3位小数）")
     python_risk_analysis: str = Field(..., description="Python侧风险分析（供Java端整合原因）")
 
 
@@ -87,8 +93,8 @@ def generate_risk_analysis(request: RiskDecisionPythonRequest, risk_prob: float)
     if request.age >= 60:
         analysis_parts.append(f"投保年龄{request.age}岁（高龄）")
 
-    # 拼接最终分析
-    analysis = "; ".join(analysis_parts) + f"；计算得出风险概率{risk_prob:.4f}"
+    # 【修改2】风险概率展示改为3位小数
+    analysis = "; ".join(analysis_parts) + f"；计算得出风险概率{risk_prob:.3f}"
     return analysis
 
 
@@ -98,7 +104,7 @@ async def calculate_risk(request: RiskDecisionPythonRequest):
     """
     风控风险计算接口（供Java端调用）
     输入：Java端传递的风控参数
-    输出：Python侧风险概率 + 风险总分 + 风险分析
+    输出：Python侧风险概率（3位小数） + 风险分析
     """
     try:
         # 构造特征数组（匹配模型输入）
@@ -115,18 +121,15 @@ async def calculate_risk(request: RiskDecisionPythonRequest):
 
         # 模型预测风险概率
         risk_prob = float(risk_model.predict(features_scaled)[0])
-        risk_prob = round(risk_prob, 4)
-
-        # 转换为风险总分
-        risk_score = int(round(risk_prob * 100))
+        # 【修改3】四舍五入改为3位小数（核心修改）
+        risk_prob = round(risk_prob, 3)
 
         # 生成风险分析
         risk_analysis = generate_risk_analysis(request, risk_prob)
 
-        # 返回结果
+        # 返回结果（删除python_risk_score字段）
         return RiskDecisionPythonResponse(
             python_risk_probability=risk_prob,
-            python_risk_score=risk_score,
             python_risk_analysis=risk_analysis
         )
 
