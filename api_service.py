@@ -27,6 +27,7 @@ sum_insured_risk_map = {
     (2000000.01, 999999999.99): "极高风险"
 }
 
+
 # 新增：通用风险等级匹配函数
 def get_risk_level(value, risk_map):
     """
@@ -39,6 +40,68 @@ def get_risk_level(value, risk_map):
         if min_val <= value <= max_val:
             return level
     return "未知风险"
+
+
+# ========== 新增：提取关键原因和次原因 ==========
+def extract_main_secondary_reason(request: "RiskDecisionPythonRequest", risk_prob: float) -> tuple[str, str]:
+    """
+    根据请求参数和风险概率，提取关键原因和次原因
+    :param request: 风控请求参数
+    :param risk_prob: 风险概率
+    :return: (关键原因, 次原因)
+    """
+    # 定义风险权重优先级（优先级高的作为关键原因）
+    risk_factors = []
+
+    # 1. 风险总分（最高优先级）
+    if request.total_risk_score >= 80:
+        risk_factors.append(("关键", f"风险因子总分{request.total_risk_score}（极高）"))
+    elif request.total_risk_score >= 50:
+        risk_factors.append(("主要", f"风险因子总分{request.total_risk_score}（中高）"))
+
+    # 2. 既往病史（次高优先级）
+    if request.has_history_disease:
+        risk_factors.append(("关键" if not risk_factors else "主要", "存在既往病史"))
+
+    # 3. 职业风险等级
+    occupation_level_map = {0: "低", 1: "较低", 2: "中", 3: "高", 4: "极高"}
+    occ_risk = f"职业风险等级{request.occupation_risk_level}（{occupation_level_map[request.occupation_risk_level]}）"
+    if request.occupation_risk_level >= 3:
+        risk_factors.append(("关键" if not risk_factors else "主要", occ_risk))
+
+    # 4. 年龄风险
+    age_risk_level = get_risk_level(request.age, age_risk_map)
+    age_risk = f"投保年龄{request.age}岁（{age_risk_level}）"
+    if age_risk_level in ["高风险", "极高风险"]:
+        risk_factors.append(("关键" if not risk_factors else "主要", age_risk))
+
+    # 5. 保额风险
+    amount_risk_level = get_risk_level(request.insure_amount, sum_insured_risk_map)
+    amount_risk = f"投保保额{request.insure_amount:.2f}元（{amount_risk_level}）"
+    if amount_risk_level in ["高风险", "极高风险"]:
+        risk_factors.append(("关键" if not risk_factors else "主要", amount_risk))
+
+    # 提取关键原因和次原因（兜底逻辑）
+    main_reason = risk_factors[0][1] if risk_factors else "无显著高风险因素"
+    secondary_reason = risk_factors[1][1] if len(risk_factors) >= 2 else "其他风险因素均为低/中等"
+
+    return main_reason, secondary_reason
+
+
+# ========== 新增：生成指定格式的决策结论 ==========
+def generate_decision_conclusion(main_reason: str, secondary_reason: str, risk_prob: float) -> str:
+    """
+    生成指定格式的决策结论：关键原因，次原因，风险概率，承保/拒保（0.5为分界线）
+    :param main_reason: 关键原因
+    :param secondary_reason: 次原因
+    :param risk_prob: 风险概率（0-1）
+    :return: 格式化决策结论字符串
+    """
+    # 0.5为分界线判断承保/拒保
+    decision = "拒保" if risk_prob >= 0.5 else "承保"
+    # 风险概率保留3位小数，和原有逻辑一致
+    return f"{main_reason}，{secondary_reason}，{risk_prob:.3f}，{decision}"
+
 
 # ========== 加载配置文件 ==========
 def load_config(config_path="config.yaml"):
@@ -64,11 +127,13 @@ def load_config(config_path="config.yaml"):
     except Exception as e:
         raise RuntimeError(f"加载配置失败：{str(e)}")
 
+
 # 全局配置（启动时加载）
 CONFIG = load_config()
 
 # ========== 1. 初始化 FastAPI 应用 ==========
 app = FastAPI(title="风控风险计算API", version="1.0")
+
 
 # ========== 2. 加载模型和标准化器 ==========
 def load_model_and_scaler():
@@ -92,8 +157,10 @@ def load_model_and_scaler():
     except Exception as e:
         raise RuntimeError(f"加载模型失败：{str(e)}")
 
+
 # 初始化模型（启动API时加载）
 risk_model, risk_scaler = load_model_and_scaler()
+
 
 # ========== 3. 定义请求/响应模型 ==========
 class RiskDecisionPythonRequest(BaseModel):
@@ -111,12 +178,15 @@ class RiskDecisionPythonRequest(BaseModel):
             raise ValueError('投保保额必须大于0')
         return v
 
-# 响应模型：仅返回概率（3位小数）+ 分析文本
+
+# 响应模型：新增决策结论字段（核心修改）
 class RiskDecisionPythonResponse(BaseModel):
     python_risk_probability: float = Field(..., ge=0.0, le=1.0, description="Python侧风险概率（0-1，保留3位小数）")
     python_risk_analysis: str = Field(..., description="Python侧风险分析（供Java端整合原因）")
+    decision_conclusion: str = Field(..., description="决策结论（格式：关键原因，次原因，风险概率，承保/拒保）")
 
-# ========== 4. 辅助函数：生成风险分析文本（核心修改） ==========
+
+# ========== 4. 辅助函数：生成风险分析文本 ==========
 def generate_risk_analysis(request: RiskDecisionPythonRequest, risk_prob: float) -> str:
     """根据参数和风险概率，生成结构化的风险分析"""
     analysis_parts = []
@@ -151,13 +221,14 @@ def generate_risk_analysis(request: RiskDecisionPythonRequest, risk_prob: float)
     analysis = "; ".join(analysis_parts) + f"；计算得出风险概率{risk_prob:.3f}"
     return analysis
 
+
 # ========== 5. 核心API接口 ==========
 @app.post("/risk/calculate", response_model=RiskDecisionPythonResponse)
 async def calculate_risk(request: RiskDecisionPythonRequest):
     """
     风控风险计算接口（供Java端调用）
     输入：Java端传递的风控参数
-    输出：Python侧风险概率（3位小数） + 风险分析
+    输出：Python侧风险概率（3位小数） + 风险分析 + 决策结论
     """
     try:
         # 1. 构造基础特征数组（匹配配置的特征列顺序）
@@ -175,7 +246,8 @@ async def calculate_risk(request: RiskDecisionPythonRequest):
         amount_disease_interact = request.insure_amount * (1 if request.has_history_disease else 0)
 
         # 合并基础特征+交互特征
-        full_features = np.concatenate([base_features, [age_occupation_interact, amount_disease_interact]]).reshape(1, -1)
+        full_features = np.concatenate([base_features, [age_occupation_interact, amount_disease_interact]]).reshape(1,
+                                                                                                                    -1)
 
         # 3. 特征标准化（仅transform，避免数据泄露）
         features_scaled = risk_scaler.transform(full_features)
@@ -188,14 +260,22 @@ async def calculate_risk(request: RiskDecisionPythonRequest):
         # 5. 生成风险分析
         risk_analysis = generate_risk_analysis(request, risk_prob)
 
-        # 6. 返回结果
+        # 6. 提取关键原因和次原因
+        main_reason, secondary_reason = extract_main_secondary_reason(request, risk_prob)
+
+        # 7. 生成指定格式的决策结论
+        decision_conclusion = generate_decision_conclusion(main_reason, secondary_reason, risk_prob)
+
+        # 8. 返回结果（新增决策结论字段）
         return RiskDecisionPythonResponse(
             python_risk_probability=risk_prob,
-            python_risk_analysis=risk_analysis
+            python_risk_analysis=risk_analysis,
+            decision_conclusion=decision_conclusion
         )
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Python侧风险计算失败：{str(e)}")
+
 
 # ========== 6. 启动API服务 ==========
 if __name__ == "__main__":
