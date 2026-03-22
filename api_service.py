@@ -99,8 +99,8 @@ def generate_decision_conclusion(main_reason: str, secondary_reason: str, risk_p
     """
     # 0.5为分界线判断承保/拒保
     decision = "拒保" if risk_prob >= 0.5 else "承保"
-    # 风险概率保留3位小数，和原有逻辑一致
-    return f"{main_reason}，{secondary_reason}，{risk_prob:.3f}，{decision}"
+    # 风险概率保留6位小数，和原有逻辑一致
+    return f"{main_reason}，{secondary_reason}，{risk_prob:.6f}，{decision}"
 
 
 # ========== 加载配置文件 ==========
@@ -181,7 +181,7 @@ class RiskDecisionPythonRequest(BaseModel):
 
 # 响应模型：新增决策结论字段（核心修改）
 class RiskDecisionPythonResponse(BaseModel):
-    python_risk_probability: float = Field(..., ge=0.0, le=1.0, description="Python侧风险概率（0-1，保留3位小数）")
+    python_risk_probability: float = Field(..., ge=0.0, le=1.0, description="Python侧风险概率（0-1，保留6位小数）")
     python_risk_analysis: str = Field(..., description="Python侧风险分析（供Java端整合原因）")
     decision_conclusion: str = Field(..., description="决策结论（格式：关键原因，次原因，风险概率，承保/拒保）")
 
@@ -217,8 +217,8 @@ def generate_risk_analysis(request: RiskDecisionPythonRequest, risk_prob: float)
     amount_risk_level = get_risk_level(request.insure_amount, sum_insured_risk_map)
     analysis_parts.append(f"投保保额{request.insure_amount:.2f}元（{amount_risk_level}）")
 
-    # 风险概率展示（3位小数）
-    analysis = "; ".join(analysis_parts) + f"；计算得出风险概率{risk_prob:.3f}"
+    # 风险概率展示（6位小数）
+    analysis = "; ".join(analysis_parts) + f"；计算得出风险概率{risk_prob:.6f}"
     return analysis
 
 
@@ -254,7 +254,7 @@ async def calculate_risk(request: RiskDecisionPythonRequest):
 
         # 4. 模型预测风险概率（回归模型用predict，而非predict_proba）
         risk_prob_raw = risk_model.predict(features_scaled)[0]  # 取第一个（唯一）预测值
-        risk_prob = round(float(risk_prob_raw), 3)  # 转float+保留3位小数
+        risk_prob = round(float(risk_prob_raw), 6)  # 转float+保留6位小数
         print(f"📌 模型预测风险概率：{risk_prob}")
 
         # 5. 生成风险分析

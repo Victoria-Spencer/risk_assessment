@@ -168,8 +168,8 @@ def train_and_save_model():
         print(f"✅ 最优参数：{grid_search.best_params_}")
         train_score = best_model.score(X_train_scaled, y_train)
         test_score = best_model.score(X_test_scaled, y_test)
-        print(f"📌 训练集R²：{train_score:.4f}")
-        print(f"📌 测试集R²：{test_score:.4f}")
+        print(f"📌 训练集R²：{train_score:.6f}")
+        print(f"📌 测试集R²：{test_score:.6f}")
 
         # 7. 安全保存模型
         if not os.path.exists(MODEL_DIR):
